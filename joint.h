@@ -46,12 +46,13 @@ public:
     }
 
     int16_t readPos() override {
-        if (bus_.FeedBack(id_) != -1) {
-            int raw = bus_.ReadPos(-1);
-            if (raw >= 0) lastReadDeg10_ = rawToDeg10(raw);
-        }
+        int raw = bus_.ReadPos(id_);
+        if (raw >= 0) lastReadDeg10_ = rawToDeg10(raw);
         return lastReadDeg10_;
     }
+
+    // Bench-only: does the servo respond on the bus at all.
+    bool ping() { return bus_.Ping(id_) != -1; }
 
     void setTorque(bool enable) override {
         // Feetech SCSCL exposes torque enable via a status register write;

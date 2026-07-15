@@ -11,15 +11,17 @@
 #define CMD_UART_TX_PIN   17
 
 // =====================================================================
-// UART 1 — SC15 bus servo link (half-duplex single-wire, TTL)
-//   Needs a bus buffer / TTLinker per Waveshare's wiring, or a direct
-//   single-wire hack per the STM32 half-duplex note we found — check
-//   your driver board's schematic before trusting these pins as-is.
+// UART 1 — SC15 bus servo link, TRUE single-wire.
+//   ESP32's UART peripheral runs in native RS485 half-duplex mode: one
+//   GPIO does both TX and RX, direction switching handled in hardware
+//   by the peripheral itself. No external mux/converter IC needed.
+//   (See controlTask setup in tasks.cpp for the uart_set_mode() call
+//   that turns this on — Serial1.begin() alone is NOT single-wire.)
 // =====================================================================
-#define BUS_UART_NUM      1          // Serial1
-#define BUS_UART_BAUD     1000000
-#define BUS_UART_RX_PIN   18
-#define BUS_UART_TX_PIN   19
+#define BUS_UART_NUM         1               // Serial1
+#define BUS_UART_DRIVER_NUM  UART_NUM_1      // must match BUS_UART_NUM
+#define BUS_UART_BAUD        1000000
+#define BUS_UART_SIG_PIN     18              // single wire: TX and RX both here
 
 // =====================================================================
 // mg995 PWM servos (plain hobby PWM, no feedback)
@@ -96,3 +98,9 @@ static const JointLimits kJointLimits[JOINT_COUNT] = {
 // Control loop cadence
 #define CONTROL_TICK_MS     20    // joint interpolation + claw poll cadence
 #define STATE_PUBLISH_MS    50    // how often shared ArmState is refreshed
+
+// USB debug-CLI demo mode — bench test only, sweeps all joints between
+// their configured min/max limits and cycles the claw. Never touches
+// the RPi command link; purely a "is the hardware alive" sanity check.
+#define DEMO_TRAVEL_MS       2000
+#define DEMO_PAUSE_MS        300

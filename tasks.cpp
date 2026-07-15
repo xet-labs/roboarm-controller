@@ -3,6 +3,8 @@
 #include "joint.h"
 #include "claw.h"
 #include "state.h"
+#include "debugcli.h"
+#include "driver/uart.h"
 
 QueueHandle_t g_cmdQueue = nullptr;
 ArmState g_armState;
@@ -28,6 +30,7 @@ static int16_t clampToLimits(uint8_t jointId, int16_t deg10)
 
 // ---------------------------------------------------------------------
 // uartTask — command-plane only. No peripheral access besides CmdSerial.
+// (debugcli polls its own USB Serial separately, see below.)
 // ---------------------------------------------------------------------
 static void sendAck(uint8_t cmdEcho)
 {
@@ -135,10 +138,22 @@ static void handleFrame(const proto::Frame &f)
     }
 }
 
+// Bench-only: Ping() both SC15 servos, prints result to USB Serial.
+// Declared in tasks.h, called from main.cpp (boot) and debugcli.cpp
+// ('ping' command) — lives here because this is where the bus/joint
+// objects are actually instantiated.
+void debugPingSc15()
+{
+    Serial.println("[PING] SC15 bus check:");
+    Serial.printf("  Shoulder (id %d): %s\n", SC15_ID_SHOULDER, shoulderJoint.ping() ? "OK" : "NO RESPONSE");
+    Serial.printf("  Elbow    (id %d): %s\n", SC15_ID_ELBOW, elbowJoint.ping() ? "OK" : "NO RESPONSE");
+}
+
 void uartTask(void *pv)
 {
     (void)pv;
     CmdSerial.begin(CMD_UART_BAUD, SERIAL_8N1, CMD_UART_RX_PIN, CMD_UART_TX_PIN);
+    debugcli::begin();
 
     proto::Parser parser;
     proto::Frame  frame;
@@ -150,19 +165,33 @@ void uartTask(void *pv)
                 handleFrame(frame);
             }
         }
+
+        debugcli::poll();              // USB console: parse any typed command
+        debugcli::demoTick(millis());  // USB console: advance sweep if "demo on"
+
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
 
 // ---------------------------------------------------------------------
 // controlTask — owns every peripheral bus. Single writer of g_armState.
+// Has no concept of "demo mode" — it just drains whatever lands in the
+// queue, whether that's from the RPi (CmdSerial) or the USB debug
+// console (debugcli). Keeping this task ignorant of where a command
+// came from is what keeps it simple.
 // ---------------------------------------------------------------------
 void controlTask(void *pv)
 {
     (void)pv;
 
-    BusSerial.begin(BUS_UART_BAUD, SERIAL_8N1, BUS_UART_RX_PIN, BUS_UART_TX_PIN);
+    // Bring the UART up normally first (required before switching mode),
+    // same pin for RX and TX — then flip the peripheral into RS485
+    // half-duplex so it handles TX/RX direction switching in hardware.
+    BusSerial.begin(BUS_UART_BAUD, SERIAL_8N1, BUS_UART_SIG_PIN, BUS_UART_SIG_PIN);
+    uart_set_mode(BUS_UART_DRIVER_NUM, UART_MODE_RS485_HALF_DUPLEX);
     scBus.pSerial = &BusSerial;
+
+    debugPingSc15(); // bench sanity check on every boot, printed to USB Serial
 
     for (int i = 0; i < JOINT_COUNT; ++i) joints[i]->begin();
     claw.begin();

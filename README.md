@@ -9,7 +9,7 @@ teach/replay. That all lives in the RPi Go commander now.
 Arduino IDE requires the sketch folder name to exactly match the
 `.ino` file name. This folder is that sketch:
 
-```ini
+```
 roboArm_controller/
   roboArm_controller.ino   <- open this in Arduino IDE
   config.h
@@ -18,6 +18,7 @@ roboArm_controller/
   claw.h
   state.h
   tasks.h  tasks.cpp
+  debugcli.h  debugcli.cpp
 ```
 
 Everything is flat on purpose — Arduino IDE compiles every `.cpp` in
@@ -127,11 +128,14 @@ Joint order everywhere: `0=Base 1=Shoulder 2=Elbow 3=Wrist`
    map from Waveshare's docs. Some units are 240°. Wrong value only
    throws off position scaling, not direction/safety — but check it
    first thing, it's a two-constant fix if wrong.
-2. **SC15 bus wiring** — Waveshare's docs assume their driver board
-   (level-shifting/half-duplex buffering built in). If you're wiring
-   the SC15 direct to an ESP32 UART, you need the single-wire
-   half-duplex trick (open-drain + pull-up) documented in third-party
-   ports — don't assume a plain TX/RX pair works.
+2. **SC15 bus is true single-wire** — one GPIO (`BUS_UART_SIG_PIN`,
+   default 18) does both TX and RX via the ESP32 UART peripheral's
+   native `UART_MODE_RS485_HALF_DUPLEX` mode (set in `controlTask`,
+   `tasks.cpp`). No external mux/converter IC. Physically: that one
+   GPIO to the servo's SIG pin, common GND, servo power from a
+   separate 4.8-8.4V supply — not from the ESP32. If servos don't
+   respond, check the boot-time ping log first (next section) before
+   suspecting the protocol layer.
 3. **`SC15Joint::setTorque()` is a stub.** Not needed for jog/record/
    replay (Day 1 goal), only for future hand-guided drag-teach. Left
    as a documented no-op rather than guessed at, since the exact
@@ -140,17 +144,48 @@ Joint order everywhere: `0=Base 1=Shoulder 2=Elbow 3=Wrist`
 4. **TB6612FNG / INA219 pins** are placeholders (`config.h`) — set to
    your actual wiring before flashing.
 
+## USB debug console
+
+Separate from everything above — this talks over plain USB `Serial`
+(115200), not the framed protocol, and never touches the RPi link.
+Open it with the Arduino Serial Monitor, `minicom -D /dev/ttyUSB0 -b 115200`,
+`screen /dev/ttyUSB0 115200`, or similar. On boot you'll also see a
+`[PING]` line for both SC15 servos — that alone tells you if the bus
+is wired correctly before you type anything.
+
+```
+help                          list commands
+demo on|off                   sweep all joints + claw between their
+                                configured limits, back and forth,
+                                until you type "demo off" or "stop"
+state                         one-shot: joint positions (deg) + claw
+                                current (mA) + claw mode
+stream on [ms] | stream off   repeat 'state' automatically (default 500ms)
+move <joint 0-3> <deg> <ms>   single joint move, plain degrees
+                                (0=Base 1=Shoulder 2=Elbow 3=Wrist)
+claw <mode 0-2> <pwm 0-255>   0=stop 1=close 2=open
+stop                          immediate stop, also cancels demo mode
+ping                          re-check both SC15 servos respond
+```
+
+`demo on` is the "is the hardware alive" test — no RPi, no jog
+mapping, just confirms every actuator moves and every sensor reads.
+Don't run it at the same time the RPi is actively sending commands —
+both land in the same internal queue and will visibly fight each
+other. It's a bench tool, not a second control channel.
+
 ## Suggested Day-1 bring-up order
 
 1. Flash, confirm boot tone + heartbeat LED, confirm USB serial prints
-   (Tools → Serial Monitor, 115200).
-2. Bench-test SC15 alone (Waveshare's own demo) to confirm ID
-   assignment + range before plugging into this firmware.
-3. `CMD_MOVE_JOINT` on shoulder (id 1) with a small move, watch it
-   respond and `GET_STATE` reflect sensed position.
-4. Same for elbow, then base/wrist (expect commanded-not-sensed
-   position back from those, by design).
-5. `CMD_CLAW_SET` close against something soft, confirm current-limit
-   cutoff fires (watch `RSP_STATE.clawCurrentMa` climb and mode drop
-   to 0 near `CLAW_CURRENT_LIMIT_MA`).
-6. Only then wire up the RPi side and drop the USB-serial crutch.
+   incl. the `[PING]` SC15 check (Tools → Serial Monitor, 115200).
+2. `ping` again from the console if either SC15 didn't respond at
+   boot — fix wiring/ID before going further.
+3. `move 1 120 1000` (shoulder to 120°), then `state` — confirm sensed
+   position moved. Repeat for joint 2 (elbow).
+4. `move 0 ...` / `move 3 ...` for base/wrist — expect commanded, not
+   sensed, position back (by design, no feedback on mg995).
+5. `claw 1 150` against something soft, `stream on 200` to watch
+   current climb and confirm the cutoff fires near
+   `CLAW_CURRENT_LIMIT_MA` (mode drops back to 0 on its own).
+6. `demo on` for a minute as an end-to-end soak test.
+7. Only then wire up the RPi side and drop the USB-serial crutch.
