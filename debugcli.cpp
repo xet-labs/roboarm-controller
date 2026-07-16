@@ -49,13 +49,22 @@ static void enqueueOrWarn(const JointCmdMsg &msg)
 static void cmdMove(int joint, float deg, int timeMs)
 {
     if (joint < 0 || joint >= JOINT_COUNT) { Serial.println("[ERR] joint must be 0-3"); return; }
+
+    int16_t requestedDeg10 = (int16_t)(deg * 10.0f);
+    int16_t clampedDeg10 = clampToLimits((uint8_t)joint, requestedDeg10);
+
     JointCmdMsg msg{};
     msg.type = MSG_MOVE_JOINT;
     msg.jointMask = 1 << joint;
-    msg.pos[joint] = (int16_t)(deg * 10.0f);
+    msg.pos[joint] = clampedDeg10;
     msg.timeMs = (uint16_t)timeMs;
     enqueueOrWarn(msg);
-    Serial.printf("[OK] joint %d -> %.1f deg over %dms\n", joint, deg, timeMs);
+
+    if (clampedDeg10 != requestedDeg10) {
+        Serial.printf("[WARN] %.1f deg clamped to %.1f deg (joint %d limits)\n",
+                      deg, clampedDeg10 / 10.0f, joint);
+    }
+    Serial.printf("[OK] joint %d -> %.1f deg over %dms\n", joint, clampedDeg10 / 10.0f, timeMs);
 }
 
 static void cmdClaw(int mode, int pwm)

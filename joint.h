@@ -104,6 +104,14 @@ public:
     }
 
     void moveTo(int16_t targetDeg10, uint16_t timeMs) override {
+        // Hard safety bound, independent of whatever clamping the caller
+        // did (or forgot to do). Servo::write() silently treats values
+        // >=~200 as a raw microsecond pulse width instead of an angle —
+        // clamping here to a valid degree range means a bad/unscaled
+        // input (e.g. 1800 meant as 180.0deg) can never fall through
+        // into that mode.
+        targetDeg10 = constrain(targetDeg10, 0, 1800);
+
         startDeg10_   = posDeg10_;
         targetDeg10_  = targetDeg10;
         moveStartMs_  = millis();

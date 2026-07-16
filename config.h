@@ -99,6 +99,20 @@ static const JointLimits kJointLimits[JOINT_COUNT] = {
 #define CONTROL_TICK_MS     20    // joint interpolation + claw poll cadence
 #define STATE_PUBLISH_MS    50    // how often shared ArmState is refreshed
 
+// Shared clamp — the ONLY place a jointId+target gets bounded to
+// kJointLimits. Every entry point onto g_cmdQueue (RPi protocol path in
+// tasks.cpp, USB debug CLI in debugcli.cpp) must call this before
+// enqueueing, so bench testing can never send the arm somewhere the
+// real protocol path would have rejected.
+inline int16_t clampToLimits(uint8_t jointId, int16_t deg10)
+{
+    if (jointId >= JOINT_COUNT) return deg10; // caller must validate jointId separately
+    const JointLimits &lim = kJointLimits[jointId];
+    if (deg10 < lim.minDeg10) return lim.minDeg10;
+    if (deg10 > lim.maxDeg10) return lim.maxDeg10;
+    return deg10;
+}
+
 // USB debug-CLI demo mode — bench test only, sweeps all joints between
 // their configured min/max limits and cycles the claw. Never touches
 // the RPi command link; purely a "is the hardware alive" sanity check.

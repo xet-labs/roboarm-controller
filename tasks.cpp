@@ -20,13 +20,8 @@ static Sc15Joint elbowJoint(scBus, SC15_ID_ELBOW);
 static IJoint   *joints[JOINT_COUNT] = { &baseJoint, &shoulderJoint, &elbowJoint, &wristJoint };
 static Claw      claw;
 
-static int16_t clampToLimits(uint8_t jointId, int16_t deg10)
-{
-    const JointLimits &lim = kJointLimits[jointId];
-    if (deg10 < lim.minDeg10) return lim.minDeg10;
-    if (deg10 > lim.maxDeg10) return lim.maxDeg10;
-    return deg10;
-}
+// clampToLimits() now lives in config.h — shared with debugcli.cpp so
+// both entry points onto g_cmdQueue enforce the same per-joint limits.
 
 // ---------------------------------------------------------------------
 // uartTask — command-plane only. No peripheral access besides CmdSerial.
