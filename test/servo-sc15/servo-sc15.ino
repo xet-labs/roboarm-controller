@@ -1,5 +1,5 @@
 /*
- * SC15 Serial Bus Servo - basic sweep/read test (SCSCL protocol)
+ * SC15 Serial Bus Servo - auto-discover + sweep/read test (SCSCL protocol)
  * Library: SCServo (Waveshare/Feetech) - install from:
  *   https://github.com/waveshare/servo_serial_bus (or Arduino Library Manager: "SCServo")
  * Board: ESP32 Dev Module
@@ -8,8 +8,16 @@
  *   ESP32 GPIO18 -> SIG (servo data line, single wire)
  *   Servo power: 4.8-8.4V separate supply, common GND with ESP32
  *
- * Default servo ID from factory = 1. Default baud is typically 1,000,000
- * on SC15 - confirm with Waveshare's servo config tool if unsure.
+ * This uses the ESP32 UART peripheral's native RS485 half-duplex mode,
+ * which time-multiplexes TX/RX on ONE GPIO in hardware. You still need
+ * a physical wire from that GPIO to the servo's SIG pin (unavoidable -
+ * that's the definition of a one-wire bus), but no separate half-duplex
+ * converter IC or resistor/diode combiner circuit is needed.
+ *
+ * Startup: scans SCAN_ID_MIN..SCAN_ID_MAX, pings every ID, and builds a
+ * list of whatever actually responds - no need to hardcode IDs up front.
+ * Loop: sweeps every discovered servo between max/mid, printing raw
+ * positions, with an explicit "NO RESPONSE" label instead of a bare -1.
  */
 
 #include <SCServo.h>
@@ -20,25 +28,57 @@ SCSCL sc;
 #define SIG_PIN 18          // single wire: same pin used for RX and TX
 #define UART_NUM UART_NUM_1
 
-// Per-servo motion profile: each servo can have its own range, speed, and timing.
-struct ServoProfile {
-  uint8_t id;
-  int posA;        // first target position (0-1023)
-  int posB;        // second target position (0-1023)
-  int timeA_ms;     // move time to posA
-  int timeB_ms;     // move time to posB
-  int dwell_ms;     // pause after each move before reading position
-  uint16_t speed;   // 0 = use time-based profile only, or set a speed cap
-};
+// Full valid SCSCL ID range is 0-253. Narrow this once you know roughly
+// what's in use - scanning the full range is slow.
+#define SCAN_ID_MIN 0
+#define SCAN_ID_MAX 4
 
-// Update IDs/ranges/speeds here - this is the only place you need to touch
-// to give each servo different behavior.
-ServoProfile profiles[] = {
-  // id, posA, posB, timeA_ms, timeB_ms, dwell_ms, speed
-  {1,  600,  200,  1000,  600,  1200, 0},   // servo 1: wide sweep, fast return
-  {2,  750,  400,   700, 1500,   900, 0},   // servo 2: narrower sweep, slow return
-};
-const int NUM_SERVOS = sizeof(profiles) / sizeof(profiles[0]);
+#define MAX_SERVOS 16   // cap on how many discovered IDs we'll track/sweep
+
+uint8_t foundIds[MAX_SERVOS];
+int     numFound = 0;
+
+// Wraps ReadPos so callers never have to special-case -1 themselves.
+// Returns true and fills posOut on success; returns false (posOut
+// untouched) if the servo didn't respond.
+bool readPosSafe(uint8_t id, int &posOut) {
+  int raw = sc.ReadPos(id);
+  if (raw < 0) return false;
+  posOut = raw;
+  return true;
+}
+
+void printPos(const char *label, uint8_t id, bool ok, int pos) {
+  Serial.print(label);
+  Serial.print(": ");
+  if (ok) Serial.print(pos);
+  else    Serial.print("NO RESPONSE");
+}
+
+void scanForServos() {
+  Serial.println("Scanning SC15 bus for servo IDs...");
+  Serial.printf("Range: %d - %d\n\n", SCAN_ID_MIN, SCAN_ID_MAX);
+
+  numFound = 0;
+  for (int id = SCAN_ID_MIN; id <= SCAN_ID_MAX && numFound < MAX_SERVOS; id++) {
+    int pingResult = sc.Ping(id);
+    if (pingResult != -1) {
+      int pos;
+      bool ok = readPosSafe(id, pos);
+      Serial.printf("  ID %3d -> responded  (current pos raw: ", id);
+      if (ok) Serial.print(pos); else Serial.print("NO RESPONSE");
+      Serial.println(")");
+
+      foundIds[numFound++] = (uint8_t)id;
+    }
+  }
+
+  Serial.println();
+  Serial.printf("Scan complete. %d servo(s) found.\n", numFound);
+  if (numFound == 0) {
+    Serial.println("Check wiring, baud rate, and power to the servos.");
+  }
+}
 
 void setup() {
   Serial.begin(115200);   // USB monitor
@@ -53,46 +93,49 @@ void setup() {
   sc.pSerial = &Serial1;
   delay(1000);
 
-  Serial.println("SC15 test starting...");
-
-  // Ping each servo - confirms it responds on the bus before we try moving it
-  for (int i = 0; i < NUM_SERVOS; i++) {
-    int id = sc.Ping(profiles[i].id);
-    Serial.print("ID ");
-    Serial.print(profiles[i].id);
-    Serial.print(": ");
-    if (id != -1) {
-      Serial.println("responded OK");
-    } else {
-      Serial.println("NO RESPONSE - check wiring/ID/baud");
-    }
-  }
+  Serial.println("SC15 test starting...\n");
+  scanForServos();
 }
 
 void loop() {
-  // Sweep every servo through its OWN pattern, one at a time,
+  if (numFound == 0) {
+    Serial.println("No servos found - re-scanning...");
+    scanForServos();
+    delay(1000);
+    return;
+  }
+
+  // Sweep every discovered servo to max, then to mid, one at a time,
   // reporting position before/after.
-  for (int i = 0; i < NUM_SERVOS; i++) {
-    ServoProfile &p = profiles[i];
-    int before = sc.ReadPos(p.id);
+  for (int i = 0; i < numFound; i++) {
+    uint8_t id = foundIds[i];
+
+    int beforePos;
+    bool beforeOk = readPosSafe(id, beforePos);
 
     // SCSCL WritePos(id, position, time_ms, speed)
     // position range is 0-1023 (10-bit), not 0-4095 like STS/SM servos
-    sc.WritePos(p.id, p.posA, p.timeA_ms, p.speed);
-    delay(p.timeA_ms + p.dwell_ms);
-    int atA = sc.ReadPos(p.id);
+    sc.WritePos(id, 0, 1000, 0);   // move to max over ~1s
+    delay(1200);
+    int atMaxPos;
+    bool atMaxOk = readPosSafe(id, atMaxPos);
 
-    sc.WritePos(p.id, p.posB, p.timeB_ms, p.speed);
-    delay(p.timeB_ms + p.dwell_ms);
-    int atB = sc.ReadPos(p.id);
+    sc.WritePos(id, 460, 1000, 0);    // move to mid over ~1s
+    delay(1200);
+    int atMidPos;
+    bool atMidOk = readPosSafe(id, atMidPos);
 
-    Serial.print("ID "); Serial.print(p.id);
-    Serial.print(" | before: "); Serial.print(before);
-    Serial.print(" -> A("); Serial.print(p.posA); Serial.print("): "); Serial.print(atA);
-    Serial.print(" -> B("); Serial.print(p.posB); Serial.print("): "); Serial.println(atB);
+    Serial.printf("ID %d | ", id);
+    printPos("before", id, beforeOk, beforePos);
+    Serial.print(" -> ");
+    printPos("max", id, atMaxOk, atMaxPos);
+    Serial.print(" -> ");
+    printPos("mid", id, atMidOk, atMidPos);
+    Serial.println();
 
-    // If a servo isn't actually moving, before/atA/atB will all read
-    // roughly the same value (or -1 if it's not responding at all).
+    // If a servo isn't actually moving, before/atMax/atMid will all read
+    // roughly the same value. If it's stopped responding mid-test,
+    // you'll now see "NO RESPONSE" instead of a misleading -1.
   }
 
   Serial.println("---");
