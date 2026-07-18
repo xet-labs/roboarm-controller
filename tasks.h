@@ -7,9 +7,17 @@
 // =====================================================================
 // Two tasks total — matches what this hardware actually needs, no more:
 //
-//   uartTask    (core 0) — owns CMD_UART parsing + framing/replies.
+//   uartTask    (core 0) — owns CMD_UART parsing + framing/replies,
+//                AND polls the USB debug console (debugcli.h/.cpp).
 //                Never touches servos/claw directly; only pushes
 //                resolved commands onto g_cmdQueue and reads g_armState.
+//                The debug console piggybacks here rather than getting
+//                its own task because it does the exact same thing
+//                uartTask already does — parse a command, validate,
+//                enqueue — just from a different UART. Splitting it
+//                into a third task would add scheduling complexity for
+//                no isolation benefit, since neither one ever blocks
+//                on a peripheral.
 //
 //   controlTask (core 1) — owns the SC15 bus, mg995 PWM, TB6612 claw,
 //                and INA219. Drains g_cmdQueue, ticks joint
@@ -46,3 +54,8 @@ extern QueueHandle_t g_cmdQueue;
 
 void uartTask(void *pv);
 void controlTask(void *pv);
+
+// Bench-only: Ping() both SC15 servos on the bus, prints result to USB
+// Serial. Lives in tasks.cpp because that's where the bus/joint objects
+// are instantiated; called from debugcli.cpp.
+void debugPingSc15();

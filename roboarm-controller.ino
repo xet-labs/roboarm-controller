@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include "config.h"
 #include "tasks.h"
+#include "state.h" 
 
 // roboArm ESP32 controller
 //
