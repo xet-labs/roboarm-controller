@@ -99,10 +99,19 @@ public:
     void begin() override {
         servo_.setPeriodHertz(50);
         servo_.attach(pin_, 500, 2500);
-        posDeg10_ = 900; // assume centered on boot; first commanded move corrects it
+        posDeg10_    = 900; // assume centered on boot; first commanded move corrects it
+        targetDeg10_ = 900;
+        lastTickMs_  = millis();
         servo_.write(posDeg10_ / 10);
     }
 
+    // Velocity-limited slew instead of restart-every-call time
+    // interpolation. moveTo() just updates WHERE we're heading;
+    // tick() is what actually moves posDeg10_, at a bounded max speed,
+    // every CONTROL_TICK_MS. This means a fast stream of small target
+    // updates (jog, vision servo, a dragged slider) produces one
+    // continuous smooth pursuit instead of N separate ramps kinking
+    // against each other -- that kinking was the stutter.
     void moveTo(int16_t targetDeg10, uint16_t timeMs) override {
         // Hard safety bound, independent of whatever clamping the caller
         // did (or forgot to do). Servo::write() silently treats values
@@ -112,28 +121,59 @@ public:
         // into that mode.
         targetDeg10 = constrain(targetDeg10, 0, 1800);
 
-        startDeg10_   = posDeg10_;
-        targetDeg10_  = targetDeg10;
-        moveStartMs_  = millis();
-        moveDurMs_    = timeMs == 0 ? 1 : timeMs;
-        moving_       = true;
+        // Deadband: ignore retargets too small to move cleanly -- see
+        // PWM_MIN_STEP_DEG10 comment in config.h. Prevents re-issuing
+        // sub-degree corrections that just make the servo buzz/hunt.
+        if (abs((int)targetDeg10 - (int)targetDeg10_) < PWM_MIN_STEP_DEG10) {
+            return;
+        }
+        targetDeg10_ = targetDeg10;
+
+        // timeMs, if given, sets a temporary velocity cap for THIS
+        // move (deg10/ms) so a deliberate, not-time-critical move
+        // (Home(), teach-replay) still roughly honors its requested
+        // duration instead of always slamming at max speed. Clamped to
+        // PWM_MAX_SLEW_DEG10_PER_MS so nothing can request a faster
+        // slew than the servo can actually do -- that clamp is what
+        // fixes jog: it requests distance/60ms, which for a tiny jog
+        // delta is a tiny fraction of max speed, but for previous code
+        // that fraction was recomputed AND restarted every 40ms; here
+        // it just continuously updates the pursuit rate, no restart.
+        int32_t dist = abs((int32_t)targetDeg10_ - (int32_t)posDeg10_);
+        if (timeMs > 0 && dist > 0) {
+            float requestedRate = (float)dist / (float)timeMs;
+            slewRateDeg10PerMs_ = requestedRate < PWM_MAX_SLEW_DEG10_PER_MS
+                                       ? requestedRate : PWM_MAX_SLEW_DEG10_PER_MS;
+        } else {
+            slewRateDeg10PerMs_ = PWM_MAX_SLEW_DEG10_PER_MS;
+        }
+        moving_ = true;
     }
 
     void tick() override {
+        uint32_t now = millis();
+        uint32_t dt  = now - lastTickMs_;
+        lastTickMs_  = now;
         if (!moving_) return;
-        uint32_t elapsed = millis() - moveStartMs_;
-        if (elapsed >= moveDurMs_) {
+
+        int32_t remaining = (int32_t)targetDeg10_ - (int32_t)posDeg10_;
+        if (remaining == 0) { moving_ = false; return; }
+
+        int32_t maxStep = (int32_t)(slewRateDeg10PerMs_ * (float)dt);
+        if (maxStep < 1) maxStep = 1; // guarantee forward progress even at low dt
+
+        if (abs(remaining) <= maxStep) {
             posDeg10_ = targetDeg10_;
             moving_ = false;
         } else {
-            posDeg10_ = startDeg10_ + (int32_t)(targetDeg10_ - startDeg10_) * (int32_t)elapsed / (int32_t)moveDurMs_;
+            posDeg10_ += (remaining > 0 ? maxStep : -maxStep);
         }
         servo_.write(posDeg10_ / 10);
     }
 
     int16_t readPos() override { return posDeg10_; }
 
-    void stop() override { moving_ = false; }
+    void stop() override { targetDeg10_ = posDeg10_; moving_ = false; }
 
     bool hasFeedback() const override { return false; }
 
@@ -141,9 +181,8 @@ private:
     uint8_t  pin_;
     Servo    servo_;
     int16_t  posDeg10_ = 900;
-    int16_t  startDeg10_ = 900;
     int16_t  targetDeg10_ = 900;
-    uint32_t moveStartMs_ = 0;
-    uint32_t moveDurMs_ = 1;
+    float    slewRateDeg10PerMs_ = PWM_MAX_SLEW_DEG10_PER_MS;
+    uint32_t lastTickMs_ = 0;
     bool     moving_ = false;
 };

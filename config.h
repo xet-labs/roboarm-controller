@@ -42,8 +42,8 @@
 // generic Feetech SCSCL memory map. VERIFY against your specific SC15
 // datasheet/firmware — some units are 240 deg. If wrong, only the
 // scale factor here needs to change, nothing else in the codebase.
-#define SC15_RAW_MAX      1023
-#define SC15_RANGE_DEG    300
+#define SC15_RAW_MAX      1024
+#define SC15_RANGE_DEG    210
 
 // =====================================================================
 // TB6612FNG — N20 claw motor driver
@@ -90,14 +90,34 @@ struct JointLimits {
 // joint's real safe range (avoid frame/cable collisions).
 static const JointLimits kJointLimits[JOINT_COUNT] = {
     /* BASE     */ { 0, 1800, 900 },
-    /* SHOULDER */ { 200, 1800, 900 },
-    /* ELBOW    */ { 200, 1800, 900 },
+    /* SHOULDER */ { 0, 1800, 900 },
+    /* ELBOW    */ { 0, 1800, 900 },
     /* WRIST    */ { 0, 1800, 900 },
 };
 
 // Control loop cadence
 #define CONTROL_TICK_MS     20    // joint interpolation + claw poll cadence
 #define STATE_PUBLISH_MS    50    // how often shared ArmState is refreshed
+
+// =====================================================================
+// PwmJoint (mg995) slew limiting -- see joint.h. Replaces the old
+// restart-every-moveTo() time interpolation, which stuttered under a
+// frequent stream of small retargets (jog / vision servo / slider
+// drag) because every new command threw away the in-flight ramp and
+// started a new one, kinking the velocity at every update boundary.
+// =====================================================================
+// Max physical slew rate, deg10 (tenths of a degree) per millisecond.
+// 2.0 = 200 deg/s -- comfortably under typical mg995 max (~300-400
+// deg/s unloaded) so it never demands more than the servo can deliver;
+// tune down further (e.g. 1.0) for an even smoother/slower look.
+#define PWM_MAX_SLEW_DEG10_PER_MS   2.0f
+
+// Ignore a retarget smaller than this many deg10 (0.3 deg default).
+// Cheap analog servos are known to buzz/hunt when repeatedly asked for
+// sub-degree corrections -- exactly what a fast jog/vision stream
+// produces once it's nearly centered. Below this threshold the extra
+// "precision" isn't achievable cleanly anyway.
+#define PWM_MIN_STEP_DEG10          3
 
 // Shared clamp — the ONLY place a jointId+target gets bounded to
 // kJointLimits. Every entry point onto g_cmdQueue (RPi protocol path in
