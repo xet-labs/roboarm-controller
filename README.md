@@ -1,8 +1,7 @@
 # roboArm ESP32 controller (Arduino IDE)
 
 Dumb driver tier. Owns servos/motor/sensors and a UART protocol. Owns
-**zero** arm intelligence — no modes, no sequencing, no "demo mode", no
-teach/replay. That all lives in the RPi Go commander now.
+**zero** arm intelligence — no modes, no sequencing. That all lives in the RPi Go commander.
 
 ## Sketch layout
 
@@ -10,8 +9,8 @@ Arduino IDE requires the sketch folder name to exactly match the
 `.ino` file name. This folder is that sketch:
 
 ```
-roboArm_controller/
-  roboArm_controller.ino   <- open this in Arduino IDE
+roboArm-controller/
+  roboArm-controller.ino   <- open this in Arduino IDE
   config.h
   protocol.h  protocol.cpp
   joint.h
