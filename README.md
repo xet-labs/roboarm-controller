@@ -3,6 +3,10 @@
 Dumb driver tier. Owns servos/motor/sensors and a UART protocol. Owns
 **zero** arm intelligence — no modes, no sequencing. That all lives in the RPi Go commander.
 
+<p align="center">
+  <video src="docs/demo.mp4" autoplay muted loop controls width="fit-content"></video>
+</p>
+
 ## Architecture
 
 ![Architecture](docs/architecture.png)
